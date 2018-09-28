@@ -405,8 +405,8 @@ def crawl_page(url):
                 logger.debug("crawl_page(): URL: " + url.geturl() + " redirects through " + r.url + " via " + previous_url.geturl() + ".")
                 log_url(url=urlparse(r.url), pagelinks=[], backlink=previous_url, crawled=True, redirect_parent=previous_url, status_code=r.status_code)
 
-                # # The web server will (should) return the "most correct" URL, let's try to use that...
-                # url = urlparse(r.url)
+            # The web server will (should) return the "most correct" URL, let's try to use that...
+            url = urlparse(r.url)
 
     except Exception as error:
         # Add the URL to the list of found urls with a 0 value
