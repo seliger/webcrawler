@@ -11,6 +11,9 @@ import shelve
 import posixpath
 import traceback
 
+from multiprocessing import Pool
+from multiprocessing.dummy import Pool as ThreadPool
+
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urlunparse
 from requests.packages.urllib3.util.retry import Retry
@@ -458,8 +461,12 @@ with shelve.open('fqdn-cache.db', 'c', writeback=False) as found_fqdns:
             logger.info("main(): Crawler Cycle " + str(crawler_cycle_counter))
             logger.info("main():     " + str(len(uncrawled_urls)) + " uncrawled in this crawler cycle.")
 
-            for uncrawled_url in uncrawled_urls:
-                crawl_page(uncrawled_url)
+            pool = ThreadPool(8)
+
+            pool.map(crawl_page, uncrawled_urls)
+
+            pool.close()
+            pool.join()
 
         # logger.info("main(): Final file dump...")
         # dump_files()
