@@ -300,14 +300,6 @@ def crawl_links(links=None, url=None):
                 if not re.search(search_fqdn, str(uri.hostname)) and not url:
                     logger.info("crawl_links(): Crawling link <" + str(uri.geturl()) + "> for parent URL " + str(url.geturl()))
 
-                # # It doesn't fix the issue, but will help gather some more context for them
-                # # And given some of the horrific URLs I've found, this may be okay...
-                # if not uri.hostname or not re.search(search_fqdn, uri.hostname):
-                #     logger.error("crawl_links(): BIZ - Bizarre URL not being logged: " + uri.geturl())
-                #     logger.error("crawl_links(): BIZ - Original URL was: " + glob_uri.geturl())
-                #     logger.error("crawl_links(): BIZ - Parent URL was: " + url.geturl())
-                #     continue
-
                 # Keep a log of new FQDNs found on our search and count now many times
                 # they are referenced
                 if uri.hostname not in found_fqdns:
@@ -448,7 +440,7 @@ def crawl_page(url):
 
 # Main execution loop
 with shelve.open('fqdn-cache.db', 'c', writeback=False) as found_fqdns:
-    with shelve.open('crawler-cache.db', 'c', writeback=False) as found_urls:
+    with shelve.open('crawler-cache.db', 'cu', writeback=False) as found_urls:
         # Seed the first site into the dict
         if len(found_urls) == 0:
             make_url(seed_site)
