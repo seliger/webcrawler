@@ -16,7 +16,6 @@ from multiprocessing.dummy import Pool as ThreadPool
 
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urlunparse
-from requests.packages.urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
 
@@ -325,38 +324,39 @@ def crawl_links(links=None, url=None):
             pass
 
 
-def crawl_page(url):
+def crawl_page(input_url):
     global found_urls
     global found_fqdns
 
-    logger.debug("crawl_page(): Crawling " + url.geturl())
+    logger.debug("crawl_page(): Crawling " + input_url.geturl())
+    urls = []
 
     # Check our blacklist
     blacklisted = False
-    if url.hostname in blacklist:
+    if input_url.hostname in blacklist:
         # If empty, the entire server is blacklisted
-        if blacklist[url.hostname] == {}:
+        if blacklist[input_url.hostname] == {}:
             blacklisted=True
         # Check to see if the scheme is blocked
-        if 'scheme' in blacklist[url.hostname]:
-            if url.scheme == blacklist[url.hostname]['scheme']:
+        if 'scheme' in blacklist[input_url.hostname]:
+            if input_url.scheme == blacklist[input_url.hostname]['scheme']:
                 blacklisted = True
         # Check to see if the path is blocked
-        if 'path' in blacklist[url.hostname]:
-            if url.path == blacklist[url.hostname]['path']:
+        if 'path' in blacklist[input_url.hostname]:
+            if input_url.path == blacklist[input_url.hostname]['path']:
                 blacklisted = True
         # Check to see if the netloc is blocked
-        if 'netloc' in blacklist[url.hostname]:
-            if url.path == blacklist[url.hostname]['netloc']:
+        if 'netloc' in blacklist[input_url.hostname]:
+            if input_url.path == blacklist[input_url.hostname]['netloc']:
                 blacklisted = True
 
     # Check for other bad situations (e.g. links with malformed mailto:, etc.)
-    if [invalid_token for invalid_token in invalid_tokens if re.search(invalid_token, url.geturl())]:
+    if [invalid_token for invalid_token in invalid_tokens if re.search(invalid_token, input_url.geturl())]:
         blacklisted = True
 
     if blacklisted:
-        logger.info("crawl_page(): Logging and disqualifying blacklisted URL: " + url.geturl())
-        log_url(url=url, blacklisted=True)
+        logger.info("crawl_page(): Logging and disqualifying blacklisted URL: " + input_url.geturl())
+        log_url(url=input_url, blacklisted=True)
         return
 
 
@@ -366,7 +366,7 @@ def crawl_page(url):
     text = None
 
     try:
-        with session.get(url.geturl(), verify=False, timeout=10, allow_redirects=True) as r:
+        with session.get(input_url.geturl(), verify=False, timeout=10, allow_redirects=True) as r:
 
             # Log the status code (we assume it won't change in the next millisecond)
             status_code = r.status_code
@@ -378,66 +378,72 @@ def crawl_page(url):
             # with the target later.
             if 'Content-Type' in r.headers:
                 content_type = r.headers['Content-Type']
-                logger.debug("crawl_page(): Content-type for URL: " + url.geturl() + " is " + content_type)
+                logger.debug("crawl_page(): Content-type for URL: " + input_url.geturl() + " is " + content_type)
 
             # Unpack any redirects we stumbled upon so we have record of those
             if r.history:
-                logger.debug("crawl_page(): Redirect(s) for URL: " + url.geturl())
+                logger.debug("crawl_page(): Redirect(s) for URL: " + input_url.geturl())
 
                 previous_url = None
 
                 # Log all of the redirects between the specified URL and the real destination
                 for redirect in r.history:
                     if previous_url:
-                        logger.debug("crawl_page(): URL: " + url.geturl() + " redirects through " + previous_url.geturl() + " via " + redirect.url + ".")     
+                        logger.debug("crawl_page(): URL: " + input_url.geturl() + " redirects through " + previous_url.geturl() + " via " + redirect.url + ".")     
                     else:
-                        logger.debug("crawl_page(): URL: " + url.geturl() + " redirects through " + " via " + redirect.url + ".")     
+                        logger.debug("crawl_page(): URL: " + input_url.geturl() + " redirects through " + " via " + redirect.url + ".")     
 
                     log_url(url=urlparse(redirect.url), backlink=previous_url, redirect_parent=previous_url, pagelinks=[], crawled=True, status_code=redirect.status_code)
                     previous_url = urlparse(redirect.url)
 
                 # Log the final landing place.
-                logger.debug("crawl_page(): URL: " + url.geturl() + " redirects through " + r.url + " via " + previous_url.geturl() + ".")
+                logger.debug("crawl_page(): URL: " + input_url.geturl() + " redirects through " + r.url + " via " + previous_url.geturl() + ".")
                 log_url(url=urlparse(r.url), pagelinks=[], backlink=previous_url, crawled=True, redirect_parent=previous_url, status_code=r.status_code)
 
             # The web server will (should) return the "most correct" URL, let's try to use that...
-            url = urlparse(r.url)
+            urls.append(urlparse(r.url))
+			
+            # Handle edge case where people are linking to a URL that isn't quite proper, but 
+            # is indexed anyway.
+            if input_url.geturl() != r.url:
+                urls.append(input_url)
 
     except Exception as error:
         # Add the URL to the list of found urls with a 0 value
         # so that we don't keep trying...
-        log_url(url, error=str(error), status_code=909)
-        logger.error("crawl_page(): Error trying to crawl " + url.geturl())
+        log_url(input_url, error=str(error), status_code=909)
+        logger.error("crawl_page(): Error trying to crawl " + input_url.geturl())
         logger.error(error)
         logger.error(traceback.format_exc())
         pass
 
     # We only want to crawl if there is something to crawl...
-    if status_code not in range(400, 599) and content_type in allowed_content_types:
+    for url in urls:
+        if status_code not in range(400, 599) and content_type in allowed_content_types:
 
-        # We only want to crawl things that haven't been crawled and only sites ending in our root stem
-        if re.search(search_fqdn, url.hostname):
-            soup = BeautifulSoup(text, features="html5lib")
-            links = [urlparse(x.get('href')) for x in soup.find_all('a')]
+            # We only want to crawl things that haven't been crawled and only sites ending in our root stem
+            if re.search(search_fqdn, url.hostname):
+                soup = BeautifulSoup(text, features="html5lib")
+                links = [urlparse(x.get('href')) for x in soup.find_all('a')]
 
-            # Log that we're crawling the specified url
-            if log_url(url=url, pagelinks=[x.geturl() for x in links], content_type=content_type, status_code=status_code):
-                # Crawl the links on the given url
-                logger.debug("crawl_page(): Invoking crawl_links for URL: " + url.geturl())
-                crawl_links(links, url)
+                # Log that we're crawling the specified url
+                if log_url(url=url, pagelinks=[x.geturl() for x in links], content_type=content_type, status_code=status_code):
+                    # Crawl the links on the given url
+                    logger.debug("crawl_page(): Invoking crawl_links for URL: " + url.geturl())
+                    crawl_links(links, url)
+                else:
+                    logger.debug("crawl_page(): Skipping crawl -- already crawled: " + url.geturl())
+
             else:
-                logger.debug("crawl_page(): Skipping crawl -- already crawled: " + url.geturl())
+                # Log, but not crawl, the external links
+                logger.info("crawl_page(): Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(status_code))
+                log_url(url=url, content_type=content_type, status_code=status_code)
 
         else:
-            # Log, but not crawl, the external links
-            logger.info("crawl_page(): Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(status_code))
+            # Log everything else as some sort of other content that would not have links
+            # or is otherwise an error, and then do not attempt to crawl further.
+            logger.debug("crawl_page(): Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(status_code))
             log_url(url=url, content_type=content_type, status_code=status_code)
-
-    else:
-        # Log everything else as some sort of other content that would not have links
-        # or is otherwise an error, and then do not attempt to crawl further.
-        logger.debug("crawl_page(): Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(status_code))
-        log_url(url=url, content_type=content_type, status_code=status_code)
 
 
 
