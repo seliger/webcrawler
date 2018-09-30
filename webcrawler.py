@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import requests
+import hashlib
 import re
 import urllib3
 import json
@@ -15,8 +16,8 @@ from multiprocessing import Pool
 from multiprocessing.dummy import Pool as ThreadPool
 
 from bs4 import BeautifulSoup
+from pymongo import MongoClient
 from urllib.parse import urlparse, urlunparse
-from requests.packages.urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
 
@@ -71,7 +72,16 @@ global counter
 global log_op_counter
 global total_counter
 
-found_fqdns = {}
+
+# Set up the database 
+client = MongoClient('localhost', 27017)
+
+db = client['purdue']
+
+found_urls = db['found_urls']
+found_fqdns = db['found_fqdns']
+
+
 counter = 0
 total_counter = 0
 crawler_cycle_counter = 0
@@ -90,16 +100,6 @@ headers['Accept-Language'] = 'en-US,en;q=0.9'
 headers['Range'] = 'bytes=0-1000000'
 session.headers.update(headers)
 
-# retries = Retry(total=3,
-#                 read=3,
-#                 connect=3,
-#                 redirect=5,
-#                 backoff_factor=0.1,
-#                 status_forcelist=(500, 502, 503, 504))
-# session.mount('http://', HTTPAdapter(max_retries=retries))
-# session.mount('https://', HTTPAdapter(max_retries=retries))
-
-
 def resolveComponents(url):
     orig_url = url
     if url.path:
@@ -110,16 +110,24 @@ def resolveComponents(url):
 
 
 def make_url(url_text=None):
-    found_urls[url_text] = {
+    global found_urls
+    hashed_url_text = hashlib.sha256(url_text.encode()).hexdigest()
+    site = {
+        "id": hashed_url_text,
+        "url": url_text,
         "crawled": False,
         "blacklisted": False,
         "pagelinks": [],
-        "backlinks": {},
+        "backlinks": [],
         "redirect_parent": None,
         "status_code": None,
         "root_stem": None,
         "content_type": None
     }
+
+    found_urls.replace_one({"id": hashed_url_text}, site, True)
+
+    return site
 
 
 def log_url(url=None, backlink=None, pagelinks=None, content_type=None, status_code=None, error=None, blacklisted=False, redirect_parent=None, crawled=False):
@@ -129,24 +137,17 @@ def log_url(url=None, backlink=None, pagelinks=None, content_type=None, status_c
     global total_counter
     global log_op_counter
 
-    found_url = None
-
     # Establish if we even have a record for this url; if not add one.
-    if url.geturl() not in found_urls:
+    hashed_url_text = hashlib.sha256(url.geturl().encode()).hexdigest()
+    found_url = found_urls.find_one({'id': hashed_url_text})
+
+    if not found_url:
         logger.debug("log_url(): URL " + url.geturl() + " was not found; creating new record")
-        make_url(url.geturl())
+        found_url = make_url(url.geturl())
 
         # We are counting discovered pages
         counter += 1
         total_counter += 1
-
-        # # Take actions based on counter changes
-        # if counter > 0 and counter % 5000 == 0:
-        #     dump_files()
-
-    # In order to use shelve without requiring writeback, we need to create a local instance
-    # of the item we are about to manipulate, manipulate it, and put it back. 
-    found_url = found_urls[url.geturl()]
 
     # For grouping purposes, add the FQDN (or a fqdn/something)
     if not found_url['root_stem'] and url.hostname in root_fqdns and path_match.match(url.path):
@@ -175,13 +176,14 @@ def log_url(url=None, backlink=None, pagelinks=None, content_type=None, status_c
     # If backlink contains a value, that means we are writing a backlink to a different URL.
     # If it doesn't exist, we need to create it so we can populate the backlink.
     else:
-
-        if backlink.geturl() not in found_url['backlinks']:
+        logged_backlink = next((bl for bl in found_url['backlinks'] if bl['url'] == backlink.geturl()), None)
+        if not logged_backlink:
             logger.debug("log_url(): URL " + url.geturl() +" was found, but backlink " + backlink.geturl() + " was not found; adding.")
-            found_url['backlinks'][backlink.geturl()] = 1
+            found_url['backlinks'].append({'url': backlink.geturl(), 'count': 1})
         else:
             logger.debug("log_url(): URL " + url.geturl() +" was found and backlink " + backlink.geturl() + " was found; incrementing.")
-            found_url['backlinks'][backlink.geturl()] += 1
+            logged_backlink['count'] += 1 
+
 
         if crawled:
             found_url['crawled'] = True
@@ -191,57 +193,25 @@ def log_url(url=None, backlink=None, pagelinks=None, content_type=None, status_c
         found_url['crawled'] = True
         found_url['error'] = error
 
-    # Write the instance back to the shelve
-    found_urls[url.geturl()] = found_url
+    # Write the instance back to Mongo
+    found_urls.replace_one({'id': hashed_url_text}, found_url)
 
 
     # Increment our log_op_counter and flush if we've crossed a threshold
     log_op_counter += 1
     if log_op_counter > 0 and log_op_counter % 3000 == 0:
-        logger.info('log_url(): Flushing data structure to disk cache.')
-        found_urls.sync()
-
         # Display some metrics
         logger.info("log_url(): Logged " + str(counter) + " URLs in cycle " + str(crawler_cycle_counter) + "...")
         logger.info("log_url(): " + str(total_counter) + " total pages logged across all cycles.")
         logger.info("log_url(): " + str(log_op_counter) + " log operations counted across all cycles.")
 
     if log_op_counter > 0 and log_op_counter % 25000 == 0:
-        logger.info("log_url(): Reorganizing (shrinking) the underlying DBM file!")
-        found_urls.sync()
-        found_urls.dict.reorganize()
-        found_urls.sync()
-        logger.info("log_url(): Reorganizing complete!")
-
         # Display some more metrics
         logger.info("log_url(): " + str(total_counter) + " total pages logged across all cycles.")
-        current_keys = found_urls.keys()
-        not_crawled = len([x for x in current_keys if not found_urls[x]['crawled']])
+        not_crawled = found_urls.count_documents({'crawled': True})
         logger.info("log_url(): " + str(not_crawled) + " uncrawled sites identified.")
 
     return found_url['crawled']
-
-
-def dump_files():
-    logger.info("dump_files(): Dumping JSON data files...")
-    found_urls.sync()
-
-    found_urls_dict = dict(found_urls)
-
-    ts = time.time()
-    st = datetime.datetime.fromtimestamp(ts).strftime('%Y%m%d%H%M%S')
-
-    with open('output/urlmap_' + st + '.json', 'w') as urlmap:
-        json.dump(found_urls_dict, urlmap)
-
-    with open('output/fqdnlist_' + st + '.json', 'w') as fqdnlist:
-        json.dump(found_fqdns, fqdnlist)
-
-    # Free the memory (hopefully)
-    found_urls_dict = None
-
-    # This time to drop the memory back down
-    found_urls.sync()
 
 
 def crawl_links(links=None, url=None):
@@ -305,14 +275,18 @@ def crawl_links(links=None, url=None):
 
                 # Keep a log of new FQDNs found on our search and count now many times
                 # they are referenced
-                if uri.hostname not in found_fqdns:
-                    found_fqdns[uri.hostname] = 1
+                found_fqdn = found_fqdns.find_one({'fqdn': uri.hostname})
+                if not found_fqdn:
+                    found_fqdn = { 'fqdn': uri.hostname, 'count': 1}
                     logger.info("crawl_links(): Discovered new FQDN: " + uri.hostname + " (" + uri.geturl() + " in " + url.geturl() +") ")
                 else:
-                    found_fqdns[uri.hostname] += 1
+                    found_fqdn['count'] += 1
 
-                if found_fqdns[uri.hostname] % 1000 == 0:
-                    logger.info("crawl_links(): FQDN references for " + uri.hostname + ": " + str(found_fqdns[uri.hostname]))
+                # Commit the new/updated value to Mongo
+                found_fqdns.replace_one({'fqdn': uri.hostname}, found_fqdn, True)
+
+                if found_fqdn['count'] % 1000 == 0:
+                    logger.info("crawl_links(): FQDN references for " + uri.hostname + ": " + str(found_fqdn['count']))
 
                 log_url(url=uri, backlink=url)
 
@@ -441,33 +415,38 @@ def crawl_page(url):
 
 
 
+
+
 # Main execution loop
-with shelve.open('fqdn-cache.db', 'c', writeback=False) as found_fqdns:
-    with shelve.open('crawler-cache.db', 'cu', writeback=False) as found_urls:
-        # Seed the first site into the dict
-        if len(found_urls) == 0:
-            make_url(seed_site)
-        else:
-            total_counter = len(found_urls)
+# Seed the first site into the dict
+total_counter = found_urls.count_documents({})
+if total_counter == 0:
+    make_url(seed_site)
 
-        while True:
-            uncrawled_urls = [urlparse(x) for x in found_urls.keys() if not found_urls[x]['crawled']]
+while True:
 
-            if len(uncrawled_urls) == 0:
-                break
+    uncrawled_urls = []
+    for uncrawled_url in found_urls.find({"crawled": False}, ['url']):
+        uncrawled_urls.append(urlparse(uncrawled_url['url']))
 
-            crawler_cycle_counter += 1
-            counter = 0
-            logger.info("main(): Crawler Cycle " + str(crawler_cycle_counter))
-            logger.info("main():     " + str(len(uncrawled_urls)) + " uncrawled in this crawler cycle.")
+    # uncrawled_urls_result = 
+    # uncrawled_urls = [urlparse(x) for x in uncrawled_urls_result]
 
-            pool = ThreadPool(8)
+    if len(uncrawled_urls) == 0:
+        break
 
-            pool.map(crawl_page, uncrawled_urls)
+    crawler_cycle_counter += 1
+    counter = 0
+    logger.info("main(): Crawler Cycle " + str(crawler_cycle_counter))
+    logger.info("main():     " + str(len(uncrawled_urls)) + " uncrawled in this crawler cycle.")
 
-            pool.close()
-            pool.join()
+    pool = ThreadPool(8)
 
-        # logger.info("main(): Final file dump...")
-        # dump_files()
-        logger.info("main(): Total logged pages: " + str(total_counter))
+    pool.map(crawl_page, uncrawled_urls)
+
+    pool.close()
+    pool.join()
+
+# logger.info("main(): Final file dump...")
+# dump_files()
+logger.info("main(): Total logged pages: " + str(total_counter))
