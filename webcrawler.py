@@ -13,7 +13,7 @@ import posixpath
 import traceback
 
 from multiprocessing import Pool
-from multiprocessing.dummy import Pool as ThreadPool
+from multiprocessing import Pool as ThreadPool
 
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
@@ -26,7 +26,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Kludgy config
 seed_site = 'https://www.purdue.edu/'
-search_fqdn = 'purdue\.edu$'
+search_fqdn = r'purdue\.edu$'
 invalid_tokens = ['http[s]?://mailto:']
 root_fqdns = ['purdue.edu', 'purdue.edu:80', 'purdue.edu:443', 
               'www.purdue.edu', 'www.purdue.edu:80', 'www.purdue.edu:443']
@@ -66,20 +66,9 @@ logger.addHandler(ch)
 logger.addHandler(fh)
 
 # Ugly but necessary (for now)
-global found_urls
-global found_fqdns
 global counter
 global log_op_counter
 global total_counter
-
-
-# Set up the database 
-client = MongoClient('localhost', 27017)
-
-db = client['purdue']
-
-found_urls = db['found_urls']
-found_fqdns = db['found_fqdns']
 
 
 counter = 0
@@ -109,8 +98,8 @@ def resolveComponents(url):
     return url
 
 
-def make_url(url_text=None):
-    global found_urls
+def make_url(db=None, url_text=None):
+    found_urls = db['found_urls']
     hashed_url_text = hashlib.sha256(url_text.encode()).hexdigest()
     site = {
         "id": hashed_url_text,
@@ -130,12 +119,12 @@ def make_url(url_text=None):
     return site
 
 
-def log_url(url=None, backlink=None, pagelinks=None, content_type=None, status_code=None, error=None, blacklisted=False, redirect_parent=None, crawled=False):
-    global found_urls
-    global found_fqdns
+def log_url(db=None, url=None, backlink=None, pagelinks=None, content_type=None, status_code=None, error=None, blacklisted=False, redirect_parent=None, crawled=False):
     global counter
     global total_counter
     global log_op_counter
+
+    found_urls = db['found_urls']
 
     # Establish if we even have a record for this url; if not add one.
     hashed_url_text = hashlib.sha256(url.geturl().encode()).hexdigest()
@@ -143,7 +132,7 @@ def log_url(url=None, backlink=None, pagelinks=None, content_type=None, status_c
 
     if not found_url:
         logger.debug("log_url(): URL " + url.geturl() + " was not found; creating new record")
-        found_url = make_url(url.geturl())
+        found_url = make_url(db=db, url_text=url.geturl())
 
         # We are counting discovered pages
         counter += 1
@@ -208,13 +197,16 @@ def log_url(url=None, backlink=None, pagelinks=None, content_type=None, status_c
     if log_op_counter > 0 and log_op_counter % 25000 == 0:
         # Display some more metrics
         logger.info("log_url(): " + str(total_counter) + " total pages logged across all cycles.")
-        not_crawled = found_urls.count_documents({'crawled': True})
+        not_crawled = found_urls.count_documents({'crawled': False})
         logger.info("log_url(): " + str(not_crawled) + " uncrawled sites identified.")
 
     return found_url['crawled']
 
 
-def crawl_links(links=None, url=None):
+def crawl_links(db=None, links=None, url=None):
+
+    found_fqdns = db['found_fqdns']
+
     # Scrape all of the links in the document and try to crawl them
     glob_uri = None
     for uri in links:
@@ -288,10 +280,10 @@ def crawl_links(links=None, url=None):
                 if found_fqdn['count'] % 1000 == 0:
                     logger.info("crawl_links(): FQDN references for " + uri.hostname + ": " + str(found_fqdn['count']))
 
-                log_url(url=uri, backlink=url)
+                log_url(db=db, url=uri, backlink=url)
 
         except Exception as error:
-            log_url(url, error=str(error), status_code=909)
+            log_url(db=db, url=url, error=str(error), status_code=909)
             logger.error("crawl_links(): Error trying to crawl " + glob_uri.geturl())
             logger.error("crawl_links(): Crawling on behalf of URL " + url.geturl())
             logger.error(error)
@@ -300,8 +292,11 @@ def crawl_links(links=None, url=None):
 
 
 def crawl_page(input_url):
-    global found_urls
-    global found_fqdns
+    # This is a forcked process. As such, we should fire up a connection to Mongo to use
+    # Set up the database 
+    client = MongoClient('localhost', 27017)
+
+    db = client['purdue']
 
     logger.debug("crawl_page(): Crawling " + input_url.geturl())
     urls = []
@@ -331,7 +326,7 @@ def crawl_page(input_url):
 
     if blacklisted:
         logger.info("crawl_page(): Logging and disqualifying blacklisted URL: " + input_url.geturl())
-        log_url(url=input_url, blacklisted=True)
+        log_url(db=db, url=input_url, blacklisted=True)
         return
 
 
@@ -368,12 +363,12 @@ def crawl_page(input_url):
                     else:
                         logger.debug("crawl_page(): URL: " + input_url.geturl() + " redirects through " + " via " + redirect.url + ".")     
 
-                    log_url(url=urlparse(redirect.url), backlink=previous_url, redirect_parent=previous_url, pagelinks=[], crawled=True, status_code=redirect.status_code)
+                    log_url(db=db, url=urlparse(redirect.url), backlink=previous_url, redirect_parent=previous_url, pagelinks=[], crawled=True, status_code=redirect.status_code)
                     previous_url = urlparse(redirect.url)
 
                 # Log the final landing place.
                 logger.debug("crawl_page(): URL: " + input_url.geturl() + " redirects through " + r.url + " via " + previous_url.geturl() + ".")
-                log_url(url=urlparse(r.url), pagelinks=[], backlink=previous_url, crawled=True, redirect_parent=previous_url, status_code=r.status_code)
+                log_url(db=db, url=urlparse(r.url), pagelinks=[], backlink=previous_url, crawled=True, redirect_parent=previous_url, status_code=r.status_code)
 
             # The web server will (should) return the "most correct" URL, let's try to use that...
             urls.append(urlparse(r.url))
@@ -386,7 +381,7 @@ def crawl_page(input_url):
     except Exception as error:
         # Add the URL to the list of found urls with a 0 value
         # so that we don't keep trying...
-        log_url(input_url, error=str(error), status_code=909)
+        log_url(db=db, url=input_url, error=str(error), status_code=909)
         logger.error("crawl_page(): Error trying to crawl " + input_url.geturl())
         logger.error(error)
         logger.error(traceback.format_exc())
@@ -402,23 +397,23 @@ def crawl_page(input_url):
                 links = [urlparse(x.get('href')) for x in soup.find_all('a')]
 
                 # Log that we're crawling the specified url
-                if log_url(url=url, pagelinks=[x.geturl() for x in links], content_type=content_type, status_code=status_code):
+                if log_url(db=db, url=url, pagelinks=[x.geturl() for x in links], content_type=content_type, status_code=status_code):
                     # Crawl the links on the given url
                     logger.debug("crawl_page(): Invoking crawl_links for URL: " + url.geturl())
-                    crawl_links(links, url)
+                    crawl_links(db=db, links=links, url=url)
                 else:
                     logger.debug("crawl_page(): Skipping crawl -- already crawled: " + url.geturl())
 
             else:
                 # Log, but not crawl, the external links
                 logger.info("crawl_page(): Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(status_code))
-                log_url(url=url, content_type=content_type, status_code=status_code)
+                log_url(db=db, url=url, content_type=content_type, status_code=status_code)
 
         else:
             # Log everything else as some sort of other content that would not have links
             # or is otherwise an error, and then do not attempt to crawl further.
             logger.debug("crawl_page(): Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(status_code))
-            log_url(url=url, content_type=content_type, status_code=status_code)
+            log_url(db=db, url=url, content_type=content_type, status_code=status_code)
 
 
 
@@ -426,9 +421,15 @@ def crawl_page(input_url):
 
 # Main execution loop
 # Seed the first site into the dict
+
+client = MongoClient('localhost', 27017)
+db = client['purdue']
+
+found_urls = db['found_urls']
+
 total_counter = found_urls.count_documents({})
 if total_counter == 0:
-    make_url(seed_site)
+    make_url(db=db, url_text=seed_site)
 
 while True:
 
