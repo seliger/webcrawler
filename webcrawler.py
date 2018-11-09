@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
 
-import requests
+
+from urllib.parse import urlparse, urlunparse
+
+from multiprocessing import Pool as ThreadPool
+
 import hashlib
 import re
-import urllib3
-import json
-import time
-import datetime
 import logging
-import shelve
 import posixpath
 import traceback
-
-from multiprocessing import Pool
-from multiprocessing import Pool as ThreadPool
+import urllib3
+import requests
 
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
-from urllib.parse import urlparse, urlunparse
-from requests.adapters import HTTPAdapter
 
 
 # Fugly workaround to stop SSL errors (not checking for valid certs...)
