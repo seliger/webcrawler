@@ -52,7 +52,7 @@ loglevel = logging.INFO
 logger = logging.getLogger('webcrawler')
 logger.setLevel(loglevel)
 
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(asctime)s - %(name)s(%(process)d) - %(levelname)s - %(funcName)s(): %(message)s')
 
 fh = logging.FileHandler('webcrawler.log')
 fh.setLevel(loglevel)
@@ -131,7 +131,7 @@ def log_url(db=None, url=None, backlink=None, pagelinks=None, content_type=None,
     found_url = found_urls.find_one({'id': hashed_url_text})
 
     if not found_url:
-        logger.debug("log_url(): URL " + url.geturl() + " was not found; creating new record")
+        logger.debug("URL " + url.geturl() + " was not found; creating new record")
         found_url = make_url(db=db, url_text=url.geturl())
 
         # We are counting discovered pages
@@ -150,7 +150,7 @@ def log_url(db=None, url=None, backlink=None, pagelinks=None, content_type=None,
 
     # If backlink is None, that means we are logging an actual page crawl.
     if backlink is None:
-        logger.debug("log_url(): Logging that " + url.geturl() + " has been crawled.")
+        logger.debug("Logging that " + url.geturl() + " has been crawled.")
         # Set the status
         found_url['crawled'] = True
 
@@ -167,10 +167,10 @@ def log_url(db=None, url=None, backlink=None, pagelinks=None, content_type=None,
     else:
         logged_backlink = next((bl for bl in found_url['backlinks'] if bl['url'] == backlink.geturl()), None)
         if not logged_backlink:
-            logger.debug("log_url(): URL " + url.geturl() +" was found, but backlink " + backlink.geturl() + " was not found; adding.")
+            logger.debug("URL " + url.geturl() +" was found, but backlink " + backlink.geturl() + " was not found; adding.")
             found_url['backlinks'].append({'url': backlink.geturl(), 'count': 1})
         else:
-            logger.debug("log_url(): URL " + url.geturl() +" was found and backlink " + backlink.geturl() + " was found; incrementing.")
+            logger.debug("URL " + url.geturl() +" was found and backlink " + backlink.geturl() + " was found; incrementing.")
             logged_backlink['count'] += 1 
 
 
@@ -190,15 +190,15 @@ def log_url(db=None, url=None, backlink=None, pagelinks=None, content_type=None,
     log_op_counter += 1
     if log_op_counter > 0 and log_op_counter % 3000 == 0:
         # Display some metrics
-        logger.info("log_url(): Logged " + str(counter) + " URLs in cycle " + str(crawler_cycle_counter) + "...")
-        logger.info("log_url(): " + str(total_counter) + " total pages logged across all cycles.")
-        logger.info("log_url(): " + str(log_op_counter) + " log operations counted across all cycles.")
+        logger.info("Logged " + str(counter) + " URLs in cycle " + str(crawler_cycle_counter) + "...")
+        logger.info(str(total_counter) + " total pages logged across all cycles.")
+        logger.info(str(log_op_counter) + " log operations counted across all cycles.")
 
     if log_op_counter > 0 and log_op_counter % 25000 == 0:
         # Display some more metrics
-        logger.info("log_url(): " + str(total_counter) + " total pages logged across all cycles.")
+        logger.info(str(total_counter) + " total pages logged across all cycles.")
         not_crawled = found_urls.count_documents({'crawled': False})
-        logger.info("log_url(): " + str(not_crawled) + " uncrawled sites identified.")
+        logger.info(str(not_crawled) + " uncrawled sites identified.")
 
     return found_url['crawled']
 
@@ -212,10 +212,10 @@ def crawl_links(db=None, links=None, url=None):
     for uri in links:
         glob_uri = uri
         try:
-            logger.debug("crawl_links(): Crawling link <" + str(uri.geturl()) + "> for parent URL " + str(url.geturl()))
+            logger.debug("Crawling link <" + str(uri.geturl()) + "> for parent URL " + str(url.geturl()))
 
             if uri.netloc or (not uri.netloc and uri.path):
-                logger.debug("crawl_links(): " + uri.geturl() + " has a netloc and matches search_fqdn OR no netloc and a path.")
+                logger.debug(uri.geturl() + " has a netloc and matches search_fqdn OR no netloc and a path.")
 
                 # 0 - scheme
                 # 1 - netloc
@@ -227,17 +227,17 @@ def crawl_links(db=None, links=None, url=None):
 
                 # If we have a scheme, make sure it's one we care about
                 if uri.scheme and uri.scheme not in schemes:
-                    logger.debug("crawl_links(): Not a valid scheme, skipping: " + uri.geturl())
+                    logger.debug("Not a valid scheme, skipping: " + uri.geturl())
                     continue
 
                 # If we have a scheme embedded at the start of the path, something is wrong.
                 if (not uri.scheme and uri.path) and any([re.search("^" + x, uri.path) for x in invalid_schemes]):
-                    logger.debug("crawl_links(): Skipping due to invalid scheme detected in the path " + url.geturl())
+                    logger.debug("Skipping due to invalid scheme detected in the path " + url.geturl())
                     continue
 
                 # Test for obscure use case and try to patch it over.
                 if uri.netloc and not uri.scheme:
-                    logger.debug("crawl_links(): Handling odd case where no scheme was specified.")
+                    logger.debug("Handling odd case where no scheme was specified.")
                     # It should be reasonable to adopt the parent's scheme
                     uri_parts[0] = url.scheme
 
@@ -245,7 +245,7 @@ def crawl_links(db=None, links=None, url=None):
                 # an absolute so we can attempt to crawl it...
                 if not uri.scheme and not uri.netloc:
                     # A full (/foo/bar) path was specified
-                    logger.debug("crawl_links(): Converting relative URL " + uri.geturl() + " to absolute.")
+                    logger.debug("Converting relative URL " + uri.geturl() + " to absolute.")
                     uri_parts[0] = url.scheme
                     if uri.path[0] == "/" or not fp_match.match(url.path):
                         uri_parts[1] = url.netloc
@@ -260,17 +260,17 @@ def crawl_links(db=None, links=None, url=None):
                 # Filter out and handle stupid shit like .. and . (WARNING: BIG FAT KLUDGE)
                 uri = resolveComponents(uri)
 
-                logger.debug("crawl_links(): New absolute URL is " + uri.geturl())
+                logger.debug("New absolute URL is " + uri.geturl())
 
                 if not re.search(search_fqdn, str(uri.hostname)) and not url:
-                    logger.info("crawl_links(): Crawling link <" + str(uri.geturl()) + "> for parent URL " + str(url.geturl()))
+                    logger.info("Crawling link <" + str(uri.geturl()) + "> for parent URL " + str(url.geturl()))
 
                 # Keep a log of new FQDNs found on our search and count now many times
                 # they are referenced
                 found_fqdn = found_fqdns.find_one({'fqdn': uri.hostname})
                 if not found_fqdn:
                     found_fqdn = { 'fqdn': uri.hostname, 'count': 1}
-                    logger.info("crawl_links(): Discovered new FQDN: " + uri.hostname + " (" + uri.geturl() + " in " + url.geturl() +") ")
+                    logger.info("Discovered new FQDN: " + uri.hostname + " (" + uri.geturl() + " in " + url.geturl() +") ")
                 else:
                     found_fqdn['count'] += 1
 
@@ -278,14 +278,14 @@ def crawl_links(db=None, links=None, url=None):
                 found_fqdns.replace_one({'fqdn': uri.hostname}, found_fqdn, True)
 
                 if found_fqdn['count'] % 1000 == 0:
-                    logger.info("crawl_links(): FQDN references for " + uri.hostname + ": " + str(found_fqdn['count']))
+                    logger.info("FQDN references for " + uri.hostname + ": " + str(found_fqdn['count']))
 
                 log_url(db=db, url=uri, backlink=url)
 
         except Exception as error:
             log_url(db=db, url=url, error=str(error), status_code=909)
-            logger.error("crawl_links(): Error trying to crawl " + glob_uri.geturl())
-            logger.error("crawl_links(): Crawling on behalf of URL " + url.geturl())
+            logger.error("Error trying to crawl " + glob_uri.geturl())
+            logger.error("Crawling on behalf of URL " + url.geturl())
             logger.error(error)
             logger.error(traceback.format_exc())
             pass
@@ -296,9 +296,9 @@ def crawl_page(input_url):
     # Set up the database 
     client = MongoClient('localhost', 27017)
 
-    db = client['purdue']
+    db = client['purdueX']
 
-    logger.debug("crawl_page(): Crawling " + input_url.geturl())
+    logger.debug("Crawling " + input_url.geturl())
     urls = []
 
     # Check our blacklist
@@ -325,7 +325,7 @@ def crawl_page(input_url):
         blacklisted = True
 
     if blacklisted:
-        logger.info("crawl_page(): Logging and disqualifying blacklisted URL: " + input_url.geturl())
+        logger.info("Logging and disqualifying blacklisted URL: " + input_url.geturl())
         log_url(db=db, url=input_url, blacklisted=True)
         return
 
@@ -348,26 +348,26 @@ def crawl_page(input_url):
             # with the target later.
             if 'Content-Type' in r.headers:
                 content_type = r.headers['Content-Type']
-                logger.debug("crawl_page(): Content-type for URL: " + input_url.geturl() + " is " + content_type)
+                logger.debug("Content-type for URL: " + input_url.geturl() + " is " + content_type)
 
             # Unpack any redirects we stumbled upon so we have record of those
             if r.history:
-                logger.debug("crawl_page(): Redirect(s) for URL: " + input_url.geturl())
+                logger.debug("Redirect(s) for URL: " + input_url.geturl())
 
                 previous_url = None
 
                 # Log all of the redirects between the specified URL and the real destination
                 for redirect in r.history:
                     if previous_url:
-                        logger.debug("crawl_page(): URL: " + input_url.geturl() + " redirects through " + previous_url.geturl() + " via " + redirect.url + ".")     
+                        logger.debug("URL: " + input_url.geturl() + " redirects through " + previous_url.geturl() + " via " + redirect.url + ".")     
                     else:
-                        logger.debug("crawl_page(): URL: " + input_url.geturl() + " redirects through " + " via " + redirect.url + ".")     
+                        logger.debug("URL: " + input_url.geturl() + " redirects through " + " via " + redirect.url + ".")     
 
                     log_url(db=db, url=urlparse(redirect.url), backlink=previous_url, redirect_parent=previous_url, pagelinks=[], crawled=True, status_code=redirect.status_code)
                     previous_url = urlparse(redirect.url)
 
                 # Log the final landing place.
-                logger.debug("crawl_page(): URL: " + input_url.geturl() + " redirects through " + r.url + " via " + previous_url.geturl() + ".")
+                logger.debug("URL: " + input_url.geturl() + " redirects through " + r.url + " via " + previous_url.geturl() + ".")
                 log_url(db=db, url=urlparse(r.url), pagelinks=[], backlink=previous_url, crawled=True, redirect_parent=previous_url, status_code=r.status_code)
 
             # The web server will (should) return the "most correct" URL, let's try to use that...
@@ -382,7 +382,7 @@ def crawl_page(input_url):
         # Add the URL to the list of found urls with a 0 value
         # so that we don't keep trying...
         log_url(db=db, url=input_url, error=str(error), status_code=909)
-        logger.error("crawl_page(): Error trying to crawl " + input_url.geturl())
+        logger.error("Error trying to crawl " + input_url.geturl())
         logger.error(error)
         logger.error(traceback.format_exc())
         pass
@@ -399,20 +399,20 @@ def crawl_page(input_url):
                 # Log that we're crawling the specified url
                 if log_url(db=db, url=url, pagelinks=[x.geturl() for x in links], content_type=content_type, status_code=status_code):
                     # Crawl the links on the given url
-                    logger.debug("crawl_page(): Invoking crawl_links for URL: " + url.geturl())
+                    logger.debug("Invoking crawl_links for URL: " + url.geturl())
                     crawl_links(db=db, links=links, url=url)
                 else:
-                    logger.debug("crawl_page(): Skipping crawl -- already crawled: " + url.geturl())
+                    logger.debug("Skipping crawl -- already crawled: " + url.geturl())
 
             else:
                 # Log, but not crawl, the external links
-                logger.info("crawl_page(): Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(status_code))
+                logger.info("Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(status_code))
                 log_url(db=db, url=url, content_type=content_type, status_code=status_code)
 
         else:
             # Log everything else as some sort of other content that would not have links
             # or is otherwise an error, and then do not attempt to crawl further.
-            logger.debug("crawl_page(): Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(status_code))
+            logger.debug("Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(status_code))
             log_url(db=db, url=url, content_type=content_type, status_code=status_code)
 
 
@@ -445,8 +445,8 @@ while True:
 
     crawler_cycle_counter += 1
     counter = 0
-    logger.info("main(): Crawler Cycle " + str(crawler_cycle_counter))
-    logger.info("main():     " + str(len(uncrawled_urls)) + " uncrawled in this crawler cycle.")
+    logger.info("Crawler Cycle " + str(crawler_cycle_counter))
+    logger.info("    " + str(len(uncrawled_urls)) + " uncrawled in this crawler cycle.")
 
     pool = ThreadPool(8)
 
@@ -455,6 +455,6 @@ while True:
     pool.close()
     pool.join()
 
-# logger.info("main(): Final file dump...")
+# logger.info("Final file dump...")
 # dump_files()
-logger.info("main(): Total logged pages: " + str(total_counter))
+logger.info("Total logged pages: " + str(total_counter))
