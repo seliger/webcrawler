@@ -1,11 +1,14 @@
 import logging
-
+import configparser
+import sys
+import os
 
 class Configuration:
 
     def __init__(self, options):
         self.options = options
         self.logger = self._init_logging()
+        self.ini = self._init_inifile()
 
     def _init_logging(self):
         # Set up logging
@@ -34,3 +37,19 @@ class Configuration:
             logger.addHandler(ch)
 
         return logger
+
+    def _init_inifile(self):
+
+        if not os.path.exists(self.options.inifile):
+            self.logger.error("The ini file (%s) does not exist, cannot continue.", self.options.inifile)
+            sys.exit(255)
+
+        config = configparser.ConfigParser()
+        config.read(self.options.inifile)
+
+        if len(config.sections()) == 0:
+            self.logger.error("The ini file (%s) does not have any sections.", self.options.inifile)
+            sys.exit(255)
+
+        return config
+
