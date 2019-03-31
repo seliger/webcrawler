@@ -2,14 +2,16 @@
 
 from wclib.options import Options
 from wclib.config import Configuration
+from wclib.crawler import WebCrawler
 
 
 def launch_webcrawler():
     """ Actual point of execution for launching the web crawler."""
-    options = Options()
+    options = Options().params
     config = Configuration(options)
 
-    config.logger.error("Test")
+    # Bootstrap the web crawler with the configuration
+    WebCrawler(config)
 
 
 if __name__ == '__main__':
