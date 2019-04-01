@@ -1,5 +1,7 @@
 argparse
 beautifulsoup4
 html5lib
+peewee
+playhouse
 requests
 urllib3
