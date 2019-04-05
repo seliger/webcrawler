@@ -4,6 +4,6 @@ datetime
 html5lib
 peewee
 pika
-playhouse
+pymysql
 requests
 urllib3
