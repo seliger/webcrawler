@@ -121,7 +121,11 @@ class Configuration:
         
         try:
             queue_config = {
-                'host': self.ini['mqueue']['host'], 
+                'host': self.ini['mqueue']['host'],
+                'port': self.ini['mqueue']['port'],
+                'user': self.ini['mqueue']['user'],
+                'password': self.ini['mqueue']['password'],
+                'vhost': self.ini['mqueue']['vhost']
             }
         except KeyError as ke:
             self.logger.error("Invalid configuration for profile %s. Configuration is missing %s.", 'mqueue', ke)

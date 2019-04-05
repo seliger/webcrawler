@@ -8,7 +8,9 @@ class MessageQueue:
     def __init__(self, config):
         self.config = config
         if self.mq_conn is None:
-            self.mq_conn = pika.BlockingConnection(pika.ConnectionParameters(host=config.mqueue['host']))
+            credentials = pika.PlainCredentials(config.mqueue['user'], config.mqueue['password'])
+            parameters = pika.ConnectionParameters(config.mqueue['host'], config.mqueue['port'], config.mqueue['vhost'], credentials)
+            self.mq_conn = pika.BlockingConnection(parameters)
 
     def create_queue(self, queue_name, durable=True):
         self.config.logger.debug('Creating and connecting to queue %s and durable is %s.', queue_name, str(durable))
