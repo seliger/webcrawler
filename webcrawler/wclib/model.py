@@ -2,18 +2,22 @@ from peewee import *
 from playhouse.shortcuts import model_to_dict, dict_to_model
 
 
-database_proxy = Proxy()
+database = Proxy()
 
-class DataModelConfig:
-    def __init__(self, config):
-        database_proxy.initialize(MySQLDatabase(config.dbname, **config.dbconfig))
+def init(config):
+    database.initialize(MySQLDatabase(config.dbname, **config.dbconfig))
+
+# Kludge... Get rid of...
+def init2(dbname, dbconfig):
+    database.initialize(MySQLDatabase(dbname, **dbconfig))
+
 
 class UnknownField(object):
     def __init__(self, *_, **__): pass
 
 class BaseModel(Model):
     class Meta:
-        database = database_proxy
+        database = database
 
 class Scan(BaseModel):
     scan_id = AutoField()
@@ -28,72 +32,52 @@ class Scan(BaseModel):
     class Meta:
         table_name = 'Scans'
 
-class URL(BaseModel):
+class FoundURL(BaseModel):
+    url_id = AutoField()
     scan_id = ForeignKeyField(column_name='scan_id', field='scan_id', model=Scan)
-    url_id = CharField()
+    url_hash = CharField(null=True)
     url_text = TextField(null=True)
     root_stem = TextField(null=True)
     fqdn = TextField(null=True)
-    found_timestamp = DateTimeField(null=True)
-
-    class Meta:
-        table_name = 'URLs'
-        indexes = (
-            (('url_id', 'scan_id'), True),
-        )
-        primary_key = CompositeKey('scan_id', 'url_id')
-
-class ScannedURL(BaseModel):
-    scan_id = ForeignKeyField(column_name='scan_id', field='scan_id', model=URL)
-    url_id = ForeignKeyField(backref='URLs_url_set', column_name='url_id', field='url_id', model=URL)
     is_crawled = IntegerField(null=True)
     is_blacklisted = IntegerField(null=True)
-    redirect_parent_scan = ForeignKeyField(column_name='redirect_parent_scan_id', field='scan_id', model='self', null=True)
-    redirect_parent_url = ForeignKeyField(backref='ScannedURLs_redirect_parent_url_set', column_name='redirect_parent_url_id', field='url_id', model='self', null=True)
-    scan_timestamp = DateTimeField(null=True)
+    redirect_parent_url_id = IntegerField(null=True)
     status_code = CharField(null=True)
     content_type = CharField(null=True)
     page_title = TextField(null=True)
+    created_timestamp = DateTimeField(null=True)
+    crawled_timestamp = DateTimeField(null=True)
 
     class Meta:
-        table_name = 'ScannedURLs'
+        table_name = 'FoundURLs'
         indexes = (
-            (('redirect_parent_scan', 'redirect_parent_url'), False),
-            (('scan_id', 'url_id'), True),
+            (('scan', 'url_hash'), True),
         )
-        primary_key = CompositeKey('scan_id', 'url_id')
 
 class Backlink(BaseModel):
-    scan_id = ForeignKeyField(backref='ScannedURLs_scan_set', column_name='scan_id', field='scan_id', model=ScannedURL)
-    url_id = ForeignKeyField(backref='ScannedURLs_url_set', column_name='url_id', field='url_id', model=ScannedURL)
-    backlink_scan = ForeignKeyField(column_name='backlink_scan_id', field='scan_id', model=ScannedURL, null=True)
-    backlink_url = ForeignKeyField(backref='ScannedURLs_backlink_url_set', column_name='backlink_url_id', field='url_id', model=ScannedURL, null=True)
+    url_id = ForeignKeyField(backref='FoundURLs_url_set', column_name='url_id', field='url_id', model=FoundURL)
+    backlink_url_id = ForeignKeyField(column_name='backlink_url_id', field='url_id', model=FoundURL)
+    backlink_timestamp = DateTimeField(null=True)
 
     class Meta:
         table_name = 'Backlinks'
-        indexes = (
-            (('backlink_scan', 'backlink_url'), False),
-            (('scan_id', 'url_id'), True),
-        )
-        primary_key = CompositeKey('scan_id', 'url_id')
+        primary_key = False
 
 class PageLink(BaseModel):
-    scan_id = ForeignKeyField(column_name='scan_id', field='scan_id', model=ScannedURL)
-    url_id = ForeignKeyField(backref='ScannedURLs_url_set', column_name='url_id', field='url_id', model=ScannedURL)
-    link = TextField(null=True)
+    url = ForeignKeyField(column_name='url_id', field='url_id', model=FoundURL)
+    link = TextField()
     linktext = TextField(null=True)
 
     class Meta:
         table_name = 'PageLinks'
-        indexes = (
-            (('scan_id', 'url_id'), True),
-        )
-        primary_key = CompositeKey('scan_id', 'url_id')
+        primary_key = False
 
 class ScanBlacklist(BaseModel):
     scan_id = ForeignKeyField(column_name='scan_id', field='scan_id', model=Scan)
     fqdn = CharField()
-    path = TextField(null=True)
+    path = CharField(null=True)
+    scheme = CharField(null=True)
+    netloc = CharField(null=True)
 
     class Meta:
         table_name = 'ScanBlackLists'
@@ -104,19 +88,16 @@ class ScanBlacklist(BaseModel):
 
 
 class ScanError(BaseModel):
-    scan_id = ForeignKeyField(column_name='scan_id', field='scan_id', model=ScannedURL)
-    url_id = ForeignKeyField(backref='ScannedURLs_url_set', column_name='url_id', field='url_id', model=ScannedURL)
+    url_id = ForeignKeyField(column_name='url_id', field='url_id', model=FoundURL)
     error_text = TextField(null=True)
+    error_timestamp = DateTimeField(null=True)
 
     class Meta:
         table_name = 'ScanErrors'
-        indexes = (
-            (('scan_id', 'url_id'), True),
-        )
-        primary_key = CompositeKey('scan_id', 'url_id')
+        primary_key = False
 
 class ScanRoot(BaseModel):
-    scan = ForeignKeyField(column_name='scan_id', field='scan_id', model=Scan)
+    scan_id = ForeignKeyField(column_name='scan_id', field='scan_id', model=Scan)
     fqdn = CharField()
     port = CharField(null=True)
 

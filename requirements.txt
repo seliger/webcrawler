@@ -1,7 +1,9 @@
 argparse
 beautifulsoup4
+datetime
 html5lib
 peewee
+pika
 playhouse
 requests
 urllib3
