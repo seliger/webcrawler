@@ -9,7 +9,7 @@ class MessageQueue:
         self.config = config
         if self.mq_conn is None:
             credentials = pika.PlainCredentials(config.mqueue['user'], config.mqueue['password'])
-            parameters = pika.ConnectionParameters(config.mqueue['host'], config.mqueue['port'], config.mqueue['vhost'], credentials)
+            parameters = pika.ConnectionParameters(config.mqueue['host'], config.mqueue['port'], config.mqueue['vhost'], credentials, heartbeat=600, blocked_connection_timeout=300)
             self.mq_conn = pika.BlockingConnection(parameters)
 
     def create_queue(self, queue_name, durable=True):
