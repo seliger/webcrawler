@@ -9,13 +9,14 @@ from playhouse.shortcuts import model_to_dict
 
 import sys
 import hashlib
+import json
 import re
 import posixpath
 import traceback
 import urllib3
 import requests
 import datetime
-
+import pika
 
 class WebCrawler:
 
@@ -33,12 +34,6 @@ class WebCrawler:
         # Bootstrap the database connection for the data model
         dm.init(config)
 
-        self.config.mqueue['queue_name'] = self.config.scan.name + "_url_queue"
-
-        # Bootstrap the interface to the message queue
-        self.mq = MessageQueue(self.config)
-        self.mq.create_queue(self.config.mqueue['queue_name'])
-
         # Not sure if this is best here, but we'll go with it for now
         self.path_match = re.compile('^/([^/]+)/?')
         self.sub_path_match = re.compile(self.scan.sub_path_re)
@@ -50,23 +45,44 @@ class WebCrawler:
 
     def run(self, url):
 
-        if self.mq.queue_length(self.config.mqueue['queue_name']) == 0:
-            self.mq.queue_push(self.config.mqueue['queue_name'], url)
-
-        # Start up a set of crawler sub processes
         processes = []
 
+        # Start up both queues
+        self._config_mqueue('page')
+        self._config_mqueue('link')
+
+
+        if self.mq.queue_length(self.config.mqueue['queues']['page']) == 0:
+            self.mq.queue_push(self.config.mqueue['queues']['page'], url)
+                
+        # Start up a set of crawler sub processes
         self.logger.debug("Instantiating %s worker processes.", self.config.options.processes)
         for p in range(int(self.config.options.processes)):
-            self.logger.debug("Instantiating the worker process %s.", str(p))
+            self.logger.debug("Instantiating the worker process %s.", str(p+1))
             processes.append(Process(target=self._init_crawl_thread, args=(p+1,)))
 
         # Start the processes
         [x.start() for x in processes]
 
-    def _mqueue_callback(self, ch, method, properties, body):
+    def _config_mqueue(self, queue_name):
+        # Configure the message queue name
+        self.config.mqueue['queues'][queue_name] = self.config.scan.name + "_" + queue_name + "_queue"
+
+        # Bootstrap the interface to the message queue
+        self.mq = MessageQueue(self.config)
+        self.mq.create_queue(self.config.mqueue['queues'][queue_name])
+
+    def _mqueue_page_callback(self, ch, method, properties, body):
         self.logger.debug("In the callback, calling to crawl_page for url %s.", body.decode())
         self.crawl_page(urlparse(body.decode()))
+    
+        self.logger.debug("Acknowledging the receipt of url %s", body.decode())
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    def _mqueue_link_callback(self, ch, method, properties, body):
+        link_payload = json.loads(body.decode())
+        self.logger.debug("In the callback, calling to crawl_page for url %s.", link_payload['url'])
+        self.crawl_links(links=[urlparse(x) for x in link_payload['links']], url=urlparse(link_payload['url']))
     
         self.logger.debug("Acknowledging the receipt of url %s", body.decode())
         ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -75,12 +91,37 @@ class WebCrawler:
 
         dm.init(self.config)
 
-        # Bootstrap the interface to the message queue
-        self.mq = MessageQueue(self.config)
-        self.mq.create_queue(self.config.mqueue['queue_name'])
+        while(True):
+            try:                
+                # Bootstrap the interface to the message queue
+                self.mq = MessageQueue(self.config)
 
-        self.logger.debug('Instantiated new crawler sub process %s...', str(id))
-        self.mq.queue_listen(self.config.mqueue['queue_name'], self._mqueue_callback)
+                # Start up both queues
+                self._config_mqueue('page')
+                self._config_mqueue('link')
+
+                self.logger.info('Instantiated new crawler sub process %s for queue %s...', str(id), self.config.options.role)
+
+                if self.config.options.role == 'page':
+                    target_callback = self._mqueue_page_callback
+                else:
+                    target_callback = self._mqueue_link_callback
+                    
+                # Start listening for the specified queue role
+                try:
+                    self.mq.queue_consume(self.config.mqueue['queues'][self.config.options.role], target_callback)
+                except KeyboardInterrupt:
+                    self.mq.queue_stop_consuming(self.config.mqueue['queues'][self.config.options.role])
+                    self.mq.destroy_conn()
+                    break
+            except pika.exceptions.ConnectionClosedByBroker:
+                continue
+            except pika.exceptions.AMQPChannelError as err:
+                self.logger.error("Caught a channel error: %s, stopping...", err)
+                break
+            except pika.exceptions.AMQPConnectionError:
+                print("Connection was closed, retrying...")
+                continue
 
     def resolveComponents(self, url):
         orig_url = url
@@ -178,10 +219,12 @@ class WebCrawler:
 
             if is_crawled:
                 found_url.is_crawled = True
+                found_url.crawled_timestamp = datetime.datetime.now()
 
         # Attempt to capture the error and force the page is_crawled.
         if error:
             found_url.is_crawled = True
+            found_url.crawled_timestamp = datetime.datetime.now()
             dm.ScanError.create(**{
                 'url_id': found_url.url_id,
                 'error_text': error
@@ -192,12 +235,13 @@ class WebCrawler:
 
         # Throw it on the pile to be crawled later.
         if not found_url.is_crawled and found_url.is_new:
-            self.mq.queue_push(self.config.mqueue['queue_name'], url.geturl())
+            self.mq.queue_push(self.config.mqueue['queues']['page'], url.geturl())
 
         return found_url.is_crawled
 
     def crawl_links(self, links=None, url=None):
 
+        self.logger.info("Crawling links from URL: %s", url.geturl())
         # Scrape all of the links in the document and try to crawl them
         glob_uri = None
         for uri in links:
@@ -372,13 +416,23 @@ class WebCrawler:
                     self.logger.debug('URL: ' + url.geturl())
                     if re.search(self.search_fqdn, url.hostname) and self.sub_path_match.match(url.path):
                         soup = BeautifulSoup(text, features="html5lib")
-                        links = [urlparse(x.get('href')) for x in soup.find_all('a')]
+                        links = [urlparse(str(x.get('href'))) for x in soup.find_all('a')]
 
                         # Log that we're crawling the specified url
                         if self.log_url(url=url, pagelinks=[x.geturl() for x in links], content_type=content_type, status_code=status_code):
                             # Crawl the links on the given url
-                            self.logger.debug("Invoking crawl_links for URL: " + url.geturl())
-                            self.crawl_links(links=links, url=url)
+                            self.logger.debug("Enqueuing URL for link crawl: " + url.geturl())
+                            # Push the link onto the link queue for processing
+                            try:
+                                link_payload = json.dumps({ 'links': [x.geturl() for x in links], 'url': url.geturl() })
+                                self.mq.queue_push(self.config.mqueue['queues']['link'], link_payload)
+                            except TypeError as te:
+                                self.logger.error(te)
+                                from pprint import pprint
+                                print('-----------------------------------------------')
+                                pprint([x.geturl() for x in links])
+                                pprint(url)
+                                print('-----------------------------------------------')
                         else:
                             self.logger.debug("Skipping crawl -- already is_crawled: " + url.geturl())
 
@@ -393,4 +447,4 @@ class WebCrawler:
                     self.logger.debug("Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(status_code))
                     self.log_url(url=url, content_type=content_type, status_code=status_code)
         else:
-            self.logger.debug("URL '%s' already crawled. Skipping.", input_url.geturl())
+            self.logger.info("URL '%s' already crawled. Skipping.", input_url.geturl())

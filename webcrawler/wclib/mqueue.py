@@ -19,6 +19,11 @@ class MessageQueue:
 
         return self.queues[queue_name]
 
+    def destroy_conn(self):
+        self.config.logger.debug('Destroying connection to message broker.')
+        self.mq_conn.close()
+        self.queues = {}
+
     def destroy_queue(self, queue_name):
         self.config.logger.debug('Destroying connection to queue %s.', queue_name)
         self.queues[queue_name].close()
@@ -29,12 +34,17 @@ class MessageQueue:
         return state.method.message_count
 
     def queue_push(self, queue_name, payload):
-        self.config.logger.debug("Pushing message '%s' onto queue '%s'.", payload, queue_name)
+        #self.config.logger.debug("Pushing message '%s' onto queue '%s'.", payload, queue_name)
         self.queues[queue_name].basic_publish(exchange='', routing_key=queue_name, body=payload, properties=pika.BasicProperties(delivery_mode=2))
 
-    def queue_listen(self, queue_name, callback):
-        self.config.logger.debug("Starting listener '%s' for queue '%s'.", callback.__name__, queue_name)
+    def queue_consume(self, queue_name, callback):
+        self.config.logger.debug("Starting consumer '%s' for queue '%s'.", callback.__name__, queue_name)
+        self.queues[queue_name].basic_qos(prefetch_count=1)
         self.queues[queue_name].basic_consume(queue_name, callback)
         self.queues[queue_name].start_consuming()
+
+    def queue_stop_consuming(self, queue_name):
+        self.config.logger.debug("Stopping consumer for queue '%s'.", queue_name)
+        self.queues[queue_name].stop_consuming()
     
 

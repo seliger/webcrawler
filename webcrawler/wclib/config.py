@@ -131,6 +131,8 @@ class Configuration:
             self.logger.error("Invalid configuration for profile %s. Configuration is missing %s.", 'mqueue', ke)
             sys.exit(255)
 
+        queue_config['queues'] = {}
+
         return queue_config
         
     def _init_httpconfig(self):
