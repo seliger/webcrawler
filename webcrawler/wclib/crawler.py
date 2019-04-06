@@ -110,10 +110,12 @@ class WebCrawler:
             found_url.hostname = url.hostname
             found_url.created_timestamp = datetime.datetime.now()
             found_url.crawled_timestamp = None
+            found_url.is_new = True
             
             self.logger.debug("Saving new URL '%s'... with scan_id of %s and url_id of %s.", found_url.url_text, str(found_url.scan_id), str(found_url.url_id))
             found_url.save()
         else:
+            found_url.is_new = False
             self.logger.debug("URL '%s' (%s) FOUND in the database, returning...", found_url.url_text, str(found_url.url_id))
     
 
@@ -188,7 +190,7 @@ class WebCrawler:
         found_url.save()
 
         # Throw it on the pile to be crawled later.
-        if not found_url.is_crawled:
+        if not found_url.is_crawled and found_url.is_new:
             self.mq.queue_push(self.config.mqueue['queue_name'], url.geturl())
 
         return found_url.is_crawled
