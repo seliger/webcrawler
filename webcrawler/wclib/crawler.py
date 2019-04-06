@@ -56,7 +56,8 @@ class WebCrawler:
         # Start up a set of crawler sub processes
         processes = []
 
-        for p in range(8):
+        self.logger.debug("Instantiating %s worker processes.", self.config.options.processes)
+        for p in range(int(self.config.options.processes)):
             self.logger.debug("Instantiating the worker process %s.", str(p))
             processes.append(Process(target=self._init_crawl_thread, args=(p+1,)))
 
