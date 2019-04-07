@@ -193,7 +193,7 @@ class WebCrawler:
             found_url.is_crawled = True
 
             # Set the crawled timestamp
-            found_url.created_timestamp = datetime.datetime.now()
+            found_url.crawled_timestamp = datetime.datetime.now()
 
             if pagelinks and dm.PageLink.select().where(dm.PageLink.url_id == found_url.url_id).count() == 0:
                 pagelinks_set = [{'url_id': found_url.url_id, 'link': z} for z in pagelinks]
