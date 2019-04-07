@@ -314,7 +314,7 @@ class WebCrawler:
 
         url_record = self.instantiate_url(input_url)
 
-        if not url_record.is_crawled:
+        if not url_record.is_crawled == 1:
             self.logger.info("Crawling " + input_url.geturl())
 
             session = requests.Session()
