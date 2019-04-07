@@ -241,80 +241,74 @@ class WebCrawler:
 
     def crawl_links(self, links=None, url=None):
 
-        url_record = self.instantiate_url(url)
+        self.logger.info("Crawling links from URL: %s", url.geturl())
+        # Scrape all of the links in the document and try to crawl them
+        glob_uri = None
+        for uri in links:
+            glob_uri = uri
+            try:
+                self.logger.debug("Crawling link <" + str(uri.geturl()) + "> for parent URL " + str(url.geturl()))
 
-        if not url_record.is_crawled == 1:
+                if uri.netloc or (not uri.netloc and uri.path):
+                    self.logger.debug(uri.geturl() + " has a netloc and matches search_fqdn OR no netloc and a path.")
 
-            self.logger.info("Crawling links from URL: %s", url.geturl())
-            # Scrape all of the links in the document and try to crawl them
-            glob_uri = None
-            for uri in links:
-                glob_uri = uri
-                try:
-                    self.logger.debug("Crawling link <" + str(uri.geturl()) + "> for parent URL " + str(url.geturl()))
+                    # 0 - scheme
+                    # 1 - netloc
+                    # 2 - path
+                    # 3 - params
+                    # 4 - query
+                    # 5 - fragment (#)
+                    uri_parts = list(uri)
 
-                    if uri.netloc or (not uri.netloc and uri.path):
-                        self.logger.debug(uri.geturl() + " has a netloc and matches search_fqdn OR no netloc and a path.")
+                    # If we have a scheme, make sure it's one we care about
+                    if uri.scheme and uri.scheme not in self.config.httpconfig['schemes']:
+                        self.logger.debug("Not a valid scheme, skipping: " + uri.geturl())
+                        continue
 
-                        # 0 - scheme
-                        # 1 - netloc
-                        # 2 - path
-                        # 3 - params
-                        # 4 - query
-                        # 5 - fragment (#)
-                        uri_parts = list(uri)
+                    # If we have a scheme embedded at the start of the path, something is wrong.
+                    if (not uri.scheme and uri.path) and any([re.search("^" + x, uri.path) for x in self.config.httpconfig['invalid_schemes']]):
+                        self.logger.debug("Skipping due to invalid scheme detected in the path " + url.geturl())
+                        continue
 
-                        # If we have a scheme, make sure it's one we care about
-                        if uri.scheme and uri.scheme not in self.config.httpconfig['schemes']:
-                            self.logger.debug("Not a valid scheme, skipping: " + uri.geturl())
-                            continue
+                    # Test for obscure use case and try to patch it over.
+                    if uri.netloc and not uri.scheme:
+                        self.logger.debug("Handling odd case where no scheme was specified.")
+                        # It should be reasonable to adopt the parent's scheme
+                        uri_parts[0] = url.scheme
 
-                        # If we have a scheme embedded at the start of the path, something is wrong.
-                        if (not uri.scheme and uri.path) and any([re.search("^" + x, uri.path) for x in self.config.httpconfig['invalid_schemes']]):
-                            self.logger.debug("Skipping due to invalid scheme detected in the path " + url.geturl())
-                            continue
+                    # If we have a relative url only (e.g. /foo/bar) make it
+                    # an absolute so we can attempt to crawl it...
+                    if not uri.scheme and not uri.netloc:
+                        # A full (/foo/bar) path was specified
+                        self.logger.debug("Converting relative URL " + uri.geturl() + " to absolute.")
+                        uri_parts[0] = url.scheme
+                        if uri.path[0] == "/" or not self.fp_match.match(url.path):
+                            uri_parts[1] = url.netloc
+                        else:
+                            # Localized path (baz/bep), so we need the parent's path
+                            uri_parts[1] = url.netloc
+                            uri_parts[2] = self.fp_match.match(url.path).group(0) + uri.path
 
-                        # Test for obscure use case and try to patch it over.
-                        if uri.netloc and not uri.scheme:
-                            self.logger.debug("Handling odd case where no scheme was specified.")
-                            # It should be reasonable to adopt the parent's scheme
-                            uri_parts[0] = url.scheme
+                    # Reassemble the URL after the futzing we just did...
+                    uri = urlparse(urlunparse(uri_parts))
 
-                        # If we have a relative url only (e.g. /foo/bar) make it
-                        # an absolute so we can attempt to crawl it...
-                        if not uri.scheme and not uri.netloc:
-                            # A full (/foo/bar) path was specified
-                            self.logger.debug("Converting relative URL " + uri.geturl() + " to absolute.")
-                            uri_parts[0] = url.scheme
-                            if uri.path[0] == "/" or not self.fp_match.match(url.path):
-                                uri_parts[1] = url.netloc
-                            else:
-                                # Localized path (baz/bep), so we need the parent's path
-                                uri_parts[1] = url.netloc
-                                uri_parts[2] = self.fp_match.match(url.path).group(0) + uri.path
+                    # Filter out and handle stupid shit like .. and . (WARNING: BIG FAT KLUDGE)
+                    uri = self.resolveComponents(uri)
 
-                        # Reassemble the URL after the futzing we just did...
-                        uri = urlparse(urlunparse(uri_parts))
+                    self.logger.debug("New absolute URL is " + uri.geturl())
 
-                        # Filter out and handle stupid shit like .. and . (WARNING: BIG FAT KLUDGE)
-                        uri = self.resolveComponents(uri)
+                    if not re.search(self.search_fqdn, str(uri.hostname)) and not url:
+                        self.logger.info("Crawling link <" + str(uri.geturl()) + "> for parent URL " + str(url.geturl()))
 
-                        self.logger.debug("New absolute URL is " + uri.geturl())
+                    self.log_url(url=uri, backlink=url)
 
-                        if not re.search(self.search_fqdn, str(uri.hostname)) and not url:
-                            self.logger.info("Crawling link <" + str(uri.geturl()) + "> for parent URL " + str(url.geturl()))
-
-                        self.log_url(url=uri, backlink=url)
-
-                except Exception as error:
-                    self.log_url(url=url, error=str(error), status_code=909)
-                    self.logger.error("Error trying to crawl " + glob_uri.geturl())
-                    self.logger.error("Crawling on behalf of URL " + url.geturl())
-                    self.logger.error(error)
-                    self.logger.error(traceback.format_exc())
-                    pass
-        else:
-             self.logger.debug("Already crawled links from URL: %s, SKIPPING.", url.geturl())
+            except Exception as error:
+                self.log_url(url=url, error=str(error), status_code=909)
+                self.logger.error("Error trying to crawl " + glob_uri.geturl())
+                self.logger.error("Crawling on behalf of URL " + url.geturl())
+                self.logger.error(error)
+                self.logger.error(traceback.format_exc())
+                pass
            
     def crawl_page(self, input_url):
 
