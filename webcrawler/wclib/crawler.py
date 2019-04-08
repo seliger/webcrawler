@@ -412,9 +412,14 @@ class WebCrawler:
             for url in urls:
                 if status_code not in range(400, 599) and content_type in self.config.httpconfig['allowed_content_types']:
 
-                    # We only want to crawl things that haven't been is_crawled and only sites ending in our root stem
+                    # Since the URL we started with may not be where we landed, let's pull up this one.
+                    inside_url_record = url_record
+                    if not input_url.geturl() == url.geturl():
+                        inside_url_record = self.instantiate_url(url)
+
+                    # We only want to crawl things that haven't been crawled and only sites ending in our root stem
                     self.logger.debug('URL: ' + url.geturl())
-                    if re.search(self.search_fqdn, url.hostname) and self.sub_path_match.match(url.path):
+                    if re.search(self.search_fqdn, url.hostname) and self.sub_path_match.match(url.path) and inside_url_record.is_crawled == 0:
                         soup = BeautifulSoup(text, features="html5lib")
                         links = [urlparse(str(x.get('href'))) for x in soup.find_all('a')]
 
