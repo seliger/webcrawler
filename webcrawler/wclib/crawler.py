@@ -410,46 +410,49 @@ class WebCrawler:
 
             # We only want to crawl if there is something to crawl...
             for url in urls:
-                if status_code not in range(400, 599) and content_type in self.config.httpconfig['allowed_content_types']:
+                # Since the URL we started with may not be where we landed, let's pull up this one.
+                inside_url_record = url_record
+                if not input_url.geturl() == url.geturl():
+                    inside_url_record = self.instantiate_url(url)
 
-                    # Since the URL we started with may not be where we landed, let's pull up this one.
-                    inside_url_record = url_record
-                    if not input_url.geturl() == url.geturl():
-                        inside_url_record = self.instantiate_url(url)
+                if not inside_url_record.is_crawled == 0:     
+                    if status_code not in range(400, 599) and content_type in self.config.httpconfig['allowed_content_types']:
 
-                    # We only want to crawl things that haven't been crawled and only sites ending in our root stem
-                    self.logger.debug('URL: ' + url.geturl())
-                    if re.search(self.search_fqdn, url.hostname) and self.sub_path_match.match(url.path) and inside_url_record.is_crawled == 0:
-                        soup = BeautifulSoup(text, features="html5lib")
-                        links = [urlparse(str(x.get('href'))) for x in soup.find_all('a')]
+                        # We only want to crawl things that haven't been crawled and only sites ending in our root stem
+                        self.logger.debug('URL: ' + url.geturl())
+                        if re.search(self.search_fqdn, url.hostname) and self.sub_path_match.match(url.path):
+                            soup = BeautifulSoup(text, features="html5lib")
+                            links = [urlparse(str(x.get('href'))) for x in soup.find_all('a')]
 
-                        # Log that we're crawling the specified url
-                        if self.log_url(url=url, pagelinks=[x.geturl() for x in links], content_type=content_type, status_code=status_code):
-                            # Crawl the links on the given url
-                            self.logger.debug("Enqueuing URL for link crawl: " + url.geturl())
-                            # Push the link onto the link queue for processing
-                            try:
-                                link_payload = json.dumps({ 'links': [x.geturl() for x in links], 'url': url.geturl() })
-                                self.mq.queue_push(self.config.mqueue['queues']['link'], link_payload)
-                            except TypeError as te:
-                                self.logger.error(te)
-                                from pprint import pprint
-                                print('-----------------------------------------------')
-                                pprint([x.geturl() for x in links])
-                                pprint(url)
-                                print('-----------------------------------------------')
+                            # Log that we're crawling the specified url
+                            if self.log_url(url=url, pagelinks=[x.geturl() for x in links], content_type=content_type, status_code=status_code):
+                                # Crawl the links on the given url
+                                self.logger.debug("Enqueuing URL for link crawl: " + url.geturl())
+                                # Push the link onto the link queue for processing
+                                try:
+                                    link_payload = json.dumps({ 'links': [x.geturl() for x in links], 'url': url.geturl() })
+                                    self.mq.queue_push(self.config.mqueue['queues']['link'], link_payload)
+                                except TypeError as te:
+                                    self.logger.error(te)
+                                    from pprint import pprint
+                                    print('-----------------------------------------------')
+                                    pprint([x.geturl() for x in links])
+                                    pprint(url)
+                                    print('-----------------------------------------------')
+                            else:
+                                self.logger.debug("Skipping crawl -- already is_crawled: " + url.geturl())
+
                         else:
-                            self.logger.debug("Skipping crawl -- already is_crawled: " + url.geturl())
+                            # Log, but not crawl, the external links
+                            self.logger.info("Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(status_code))
+                            self.log_url(url=url, content_type=content_type, status_code=status_code)
 
                     else:
-                        # Log, but not crawl, the external links
-                        self.logger.info("Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(status_code))
+                        # Log everything else as some sort of other content that would not have links
+                        # or is otherwise an error, and then do not attempt to crawl further.
+                        self.logger.debug("Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(status_code))
                         self.log_url(url=url, content_type=content_type, status_code=status_code)
-
                 else:
-                    # Log everything else as some sort of other content that would not have links
-                    # or is otherwise an error, and then do not attempt to crawl further.
-                    self.logger.debug("Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(status_code))
-                    self.log_url(url=url, content_type=content_type, status_code=status_code)
+                    self.logger.info("INSIDE URL '%s' already crawled. Skipping.", url.geturl())
         else:
             self.logger.info("URL '%s' already crawled. Skipping.", input_url.geturl())
