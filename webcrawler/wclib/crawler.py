@@ -415,7 +415,7 @@ class WebCrawler:
                 if not input_url.geturl() == url.geturl():
                     inside_url_record = self.instantiate_url(url)
 
-                if not inside_url_record.is_crawled == 0:     
+               if inside_url_record.is_crawled == 0:     
                     if status_code not in range(400, 599) and content_type in self.config.httpconfig['allowed_content_types']:
 
                         # We only want to crawl things that haven't been crawled and only sites ending in our root stem
