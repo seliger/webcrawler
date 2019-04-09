@@ -396,7 +396,7 @@ class WebCrawler:
                     
                     # Handle edge case where people are linking to a URL that isn't quite proper, but 
                     # is indexed anyway.
-                    if input_url.geturl() != r.url:
+                    if input_url.geturl() != r.url and not r.history:
                         urls.append(input_url)
 
             except Exception as error:
