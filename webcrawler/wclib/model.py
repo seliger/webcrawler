@@ -41,7 +41,7 @@ class FoundURL(BaseModel):
     fqdn = TextField(null=True)
     is_crawled = IntegerField(null=True)
     is_blacklisted = IntegerField(null=True)
-    redirect_parent_url_id = IntegerField(null=True)
+    next_url_id = ForeignKeyField(column_name='next_url_id', field='url_id', model='self', null=True)
     status_code = CharField(null=True)
     content_type = CharField(null=True)
     page_title = TextField(null=True)
@@ -51,6 +51,8 @@ class FoundURL(BaseModel):
     class Meta:
         table_name = 'FoundURLs'
         indexes = (
+            (('scan', 'root_stem'), False),
+            (('scan', 'url_hash'), False),
             (('scan', 'url_hash'), True),
         )
 
@@ -81,9 +83,6 @@ class ScanBlacklist(BaseModel):
 
     class Meta:
         table_name = 'ScanBlackLists'
-        indexes = (
-            (('scan_id', 'fqdn', 'path'), True),
-        )
         primary_key = False
 
 

@@ -73,8 +73,25 @@ class WebCrawler:
         self.mq.create_queue(self.config.mqueue['queues'][queue_name])
 
     def _mqueue_page_callback(self, ch, method, properties, body):
-        self.logger.debug("In the callback, calling to crawl_page for url %s.", body.decode())
-        self.crawl_page(urlparse(body.decode()))
+        url = urlparse(body.decode())
+
+        # Look up the URL. If it's not alrady crawled and not blacklisted
+        # then go ahead and crawl it. Else skip it.
+        url_record = self.instantiate_url(url)
+        if not url_record.is_crawled and not url_record.is_blacklisted:
+            self.logger.debug("In the callback, calling to crawl_page for url %s.", url.geturl())
+            result = self.crawl_page(input_url=url, url_record=url_record)
+
+            # Take the crawl result and log the URL
+            self.log_url(**result)
+
+            # If there are links, post that to the links queue
+            if 'pagelinks' in result and result['pagelinks']:
+                link_payload = json.dumps({ 'links': [x.geturl() for x in result['pagelinks']], 'url': url.geturl() })
+                self.mq.queue_push(self.config.mqueue['queues']['link'], link_payload)
+
+        else:
+            self.logger.debug("SKIPPING already crawled or blacklisted URL %s.", url.geturl())
     
         self.logger.debug("Acknowledging the receipt of url %s", body.decode())
         ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -104,6 +121,13 @@ class WebCrawler:
 
                 if self.config.options.role == 'page':
                     target_callback = self._mqueue_page_callback
+
+                    # Because we are launching a page crawler, we want to launch and configure a persistent 
+                    # request session
+                    self.session = requests.Session()
+                    self.session.headers.update(self.config.sessionconfig['headers'])
+                    self.session.max_redirects = self.config.sessionconfig['sessionopts']['max_redirects']
+
                 else:
                     target_callback = self._mqueue_link_callback
                     
@@ -163,7 +187,7 @@ class WebCrawler:
 
         return found_url
 
-    def log_url(self, url=None, record=None, backlink=None, pagelinks=None, content_type=None, status_code=None, error=None, is_blacklisted=False, redirect_parent=None, is_crawled=False):
+    def log_url(self, url=None, record=None, backlink=None, pagelinks=None, content_type=None, status_code=None, error=None, is_blacklisted=False, redirect_next=None, is_crawled=False):
         self.logger.debug("Entering log_url() for URL %s.", url.geturl())
 
         if record:
@@ -177,13 +201,27 @@ class WebCrawler:
         else:
             found_url.root_stem = url.hostname
 
+        # Attach the status code
+        if status_code:
+            found_url.status_code = status_code
+
         # If this is a redirect, log its parent so we can retrace later
-        if redirect_parent:
+        if redirect_next:
+            next_url = urlparse(redirect_next.url)
+
             # Go look up (or create) the identifier for the backlinked URL
-            redirect = self.instantiate_url(redirect_parent)
+            redirect = self.instantiate_url(next_url)
 
             # Associate the redirect page ID to the URL
-            found_url.redirect_parent_url_id = redirect.url_id
+            found_url.next_url_id = redirect.url_id
+
+            # Mark the URL as crawled since we can't do anything else with it.
+            found_url.is_crawled = True
+            found_url.crawled_timestamp = datetime.datetime.now()
+
+            # Put the redirect URL on the pile to be scanned.
+            if not redirect.is_crawled:
+                self.mq.queue_push(self.config.mqueue['queues']['page'], next_url.geturl())
 
         # If backlink is None, that means we are logging an actual page crawl.
         if backlink is None:
@@ -191,6 +229,7 @@ class WebCrawler:
 
             # Set the status
             found_url.is_crawled = True
+            found_url.crawled_timestamp = datetime.datetime.now()
 
             # Set the crawled timestamp
             found_url.crawled_timestamp = datetime.datetime.now()
@@ -199,8 +238,7 @@ class WebCrawler:
                 pagelinks_set = [{'url_id': found_url.url_id, 'link': z} for z in pagelinks]
                 dm.PageLink.insert_many(pagelinks_set).execute()
 
-            # Attach the HTTP status code and content type for the is_crawled web page.
-            found_url.status_code = status_code
+            # Attach the HTTP status code and content type for the crawled web page.
             found_url.content_type = content_type
             found_url.is_blacklisted = is_blacklisted
 
@@ -221,6 +259,13 @@ class WebCrawler:
                 found_url.is_crawled = True
                 found_url.crawled_timestamp = datetime.datetime.now()
 
+
+        # # Catch external websites and mark them as crawled
+        # if not (re.search(self.search_fqdn, url.hostname) and self.sub_path_match.match(url.path)):
+        #         found_url.is_crawled = True
+        #         found_url.crawled_timestamp = datetime.datetime.now()
+
+
         # Attempt to capture the error and force the page is_crawled.
         if error:
             found_url.is_crawled = True
@@ -234,7 +279,7 @@ class WebCrawler:
         found_url.save()
 
         # Throw it on the pile to be crawled later.
-        if not found_url.is_crawled and found_url.is_new:
+        if not found_url.is_crawled:
             self.mq.queue_push(self.config.mqueue['queues']['page'], url.geturl())
 
         return found_url.is_crawled
@@ -310,149 +355,64 @@ class WebCrawler:
                 self.logger.error(traceback.format_exc())
                 pass
            
-    def crawl_page(self, input_url):
+    def crawl_page(self, input_url, url_record=None):
 
-        url_record = self.instantiate_url(input_url)
+        # Check our blacklist
+        is_blacklisted = False
+        if input_url.hostname in self.config.blacklist:
+            # If empty, the entire server is is_blacklisted
+            if self.config.blacklist[input_url.hostname] == {}:
+                is_blacklisted=True
+            # Check to see if the scheme is blocked
+            if 'scheme' in self.config.blacklist[input_url.hostname]:
+                if input_url.scheme == self.config.blacklist[input_url.hostname]['scheme']:
+                    is_blacklisted = True
+            # Check to see if the path is blocked
+            if 'path' in self.config.blacklist[input_url.hostname]:
+                if input_url.path == self.config.blacklist[input_url.hostname]['path']:
+                    is_blacklisted = True
+            # Check to see if the netloc is blocked
+            if 'netloc' in self.config.blacklist[input_url.hostname]:
+                if input_url.path == self.config.blacklist[input_url.hostname]['netloc']:
+                    is_blacklisted = True
 
-        if not url_record.is_crawled == 1:
-            self.logger.info("Crawling " + input_url.geturl())
+        # Check for other bad situations (e.g. links with malformed mailto:, etc.)
+        if [invalid_token for invalid_token in self.config.httpconfig['invalid_tokens'] if re.search(invalid_token, input_url.geturl())]:
+            is_blacklisted = True
 
-            session = requests.Session()
-            session.headers.update(self.config.sessionconfig['headers'])
-            session.max_redirects = self.config.sessionconfig['sessionopts']['max_redirects']
+        if is_blacklisted:
+            self.logger.info("Logging and disqualifying is_blacklisted URL: " + input_url.geturl())
+            return { 'url': input_url, 'record': url_record, 'is_blacklisted': True}
 
-            urls = []
-            # Check our blacklist
-            is_blacklisted = False
-            if input_url.hostname in self.config.blacklist:
-                # If empty, the entire server is is_blacklisted
-                if self.config.blacklist[input_url.hostname] == {}:
-                    is_blacklisted=True
-                # Check to see if the scheme is blocked
-                if 'scheme' in self.config.blacklist[input_url.hostname]:
-                    if input_url.scheme == self.config.blacklist[input_url.hostname]['scheme']:
-                        is_blacklisted = True
-                # Check to see if the path is blocked
-                if 'path' in self.config.blacklist[input_url.hostname]:
-                    if input_url.path == self.config.blacklist[input_url.hostname]['path']:
-                        is_blacklisted = True
-                # Check to see if the netloc is blocked
-                if 'netloc' in self.config.blacklist[input_url.hostname]:
-                    if input_url.path == self.config.blacklist[input_url.hostname]['netloc']:
-                        is_blacklisted = True
+        # Try to fetch the URL in question
+        try:
+            with self.session.get(input_url.geturl(), verify=False, timeout=10, allow_redirects=False) as r:
+                # url = urlparse(r.url)
+                url = input_url
+                self.logger.info('Evaluating URL %s', url.geturl())
+                links = None
+                content_type = None
+                if 'Content-Type' in r.headers:
+                    content_type = r.headers['Content-Type']
 
-            # Check for other bad situations (e.g. links with malformed mailto:, etc.)
-            if [invalid_token for invalid_token in self.config.httpconfig['invalid_tokens'] if re.search(invalid_token, input_url.geturl())]:
-                is_blacklisted = True
-
-            if is_blacklisted:
-                self.logger.info("Logging and disqualifying is_blacklisted URL: " + input_url.geturl())
-                self.log_url(url=input_url, record=url_record, is_blacklisted=True)
-                return
-
-
-            content_type = None
-            status_code = None
-            links = None
-            text = None
-
-            try:
-                with session.get(input_url.geturl(), verify=False, timeout=10, allow_redirects=True) as r:
-
-                    # Log the status code (we assume it won't change in the next millisecond)
-                    status_code = r.status_code
-
-                    # Grab the text (if any)
-                    text = r.text
-
-                    # Determine the content type up front to determine what we do
-                    # with the target later.
-                    if 'Content-Type' in r.headers:
-                        content_type = r.headers['Content-Type']
-                        self.logger.debug("Content-type for URL: " + input_url.geturl() + " is " + content_type)
-
-                    # Unpack any redirects we stumbled upon so we have record of those
-                    if r.history:
-                        self.logger.debug("Redirect(s) for URL: " + input_url.geturl())
-
-                        previous_url = None
-
-                        # Log all of the redirects between the specified URL and the real destination
-                        for redirect in r.history:
-                            if previous_url:
-                                self.logger.debug("URL: " + input_url.geturl() + " redirects through " + previous_url.geturl() + " via " + redirect.url + ".")     
-                            else:
-                                self.logger.debug("URL: " + input_url.geturl() + " redirects through " + " via " + redirect.url + ".")     
-
-                            self.log_url(url=urlparse(redirect.url), backlink=previous_url, redirect_parent=previous_url, pagelinks=[], is_crawled=True, status_code=redirect.status_code)
-                            previous_url = urlparse(redirect.url)
-
-                        # Log the final landing place.
-                        self.logger.debug("URL: " + input_url.geturl() + " redirects through " + r.url + " via " + previous_url.geturl() + ".")
-                        self.log_url(url=urlparse(r.url), pagelinks=[], backlink=previous_url, is_crawled=True, redirect_parent=previous_url, status_code=r.status_code)
-
-                    # The web server will (should) return the "most correct" URL, let's try to use that...
-                    urls.append(urlparse(r.url))
-                    
-                    # Handle edge case where people are linking to a URL that isn't quite proper, but 
-                    # is indexed anyway.
-                    if input_url.geturl() != r.url and not r.history:
-                        urls.append(input_url)
-
-            except Exception as error:
-                # Add the URL to the list of found urls with a 0 value
-                # so that we don't keep trying...
-                self.logger.error("Error trying to crawl " + input_url.geturl())
-                self.logger.error(error)
-                self.logger.error(traceback.format_exc())
-                self.log_url(url=input_url, record=url_record, error=str(error), status_code=909)
-                pass
-
-            # We only want to crawl if there is something to crawl...
-            for url in urls:
-                # Since the URL we started with may not be where we landed, let's pull up this one.
-                inside_url_record = url_record
-                if not input_url.geturl() == url.geturl():
-                    inside_url_record = self.instantiate_url(url)
-
-                if inside_url_record.is_crawled == 0:     
-                    if status_code not in range(400, 599) and content_type in self.config.httpconfig['allowed_content_types']:
-
-                        # We only want to crawl things that haven't been crawled and only sites ending in our root stem
-                        self.logger.debug('URL: ' + url.geturl())
-                        if re.search(self.search_fqdn, url.hostname) and self.sub_path_match.match(url.path):
-                            soup = BeautifulSoup(text, features="html5lib")
-                            links = [urlparse(str(x.get('href'))) for x in soup.find_all('a')]
-
-                            # Log that we're crawling the specified url
-                            if self.log_url(url=url, pagelinks=[x.geturl() for x in links], content_type=content_type, status_code=status_code):
-                                # Crawl the links on the given url
-                                self.logger.debug("Enqueuing URL for link crawl: " + url.geturl())
-                                # Push the link onto the link queue for processing
-                                try:
-                                    link_payload = json.dumps({ 'links': [x.geturl() for x in links], 'url': url.geturl() })
-                                    self.mq.queue_push(self.config.mqueue['queues']['link'], link_payload)
-                                except TypeError as te:
-                                    self.logger.error(te)
-                                    from pprint import pprint
-                                    print('-----------------------------------------------')
-                                    pprint([x.geturl() for x in links])
-                                    pprint(url)
-                                    print('-----------------------------------------------')
-                            else:
-                                self.logger.debug("Skipping crawl -- already is_crawled: " + url.geturl())
-
-                        else:
-                            # Log, but not crawl, the external links
-                            self.logger.info("Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(status_code))
-                            self.log_url(url=url, content_type=content_type, status_code=status_code)
-
+                if r.status_code not in range(300, 599) and content_type in self.config.httpconfig['allowed_content_types']:
+                    # We only want to crawl things that haven't been crawled and only sites ending in our root stem
+                    if re.search(self.search_fqdn, url.hostname) and self.sub_path_match.match(url.path):
+                        self.logger.debug('Extracting links from URL: ' + url.geturl())
+                        soup = BeautifulSoup(r.text, features="html5lib")
+                        links = [urlparse(str(x.get('href'))) for x in soup.find_all('a')]
                     else:
-                        # Log everything else as some sort of other content that would not have links
-                        # or is otherwise an error, and then do not attempt to crawl further.
-                        self.logger.debug("Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(status_code))
-                        self.log_url(url=url, content_type=content_type, status_code=status_code)
+                        self.logger.info("Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(r.status_code))
+
                 else:
-                    self.logger.info("INSIDE URL '%s' already crawled. Skipping.", url.geturl())
-        else:
-            self.logger.info("URL '%s' already crawled. Skipping.", input_url.geturl())
+                    self.logger.debug("Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(r.status_code))
+                    
+            return { 'url': url, 'pagelinks': links, 'content_type': content_type, 'redirect_next': r.next, 'status_code': r.status_code }
+
+        except Exception as error:
+            # Add the URL to the list of found urls with a 0 value
+            # so that we don't keep trying...
+            self.logger.error("Error trying to crawl " + input_url.geturl())
+            self.logger.error(error)
+            self.logger.error(traceback.format_exc())
+            return { 'url': input_url, 'record': url_record, 'error': str(error), 'status_code': 909 }
