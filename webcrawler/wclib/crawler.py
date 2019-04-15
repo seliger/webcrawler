@@ -167,7 +167,7 @@ class WebCrawler:
             found_url.url_hash = hashed_url
             found_url.url_text = url.geturl()
             found_url.is_crawled = False
-            found_url.is_blacaklisted = False
+            found_url.is_blacklisted = False
             found_url.redirect_parent_url_id = None
             found_url.status_code = None
             found_url.content_type = None
@@ -407,7 +407,7 @@ class WebCrawler:
                 else:
                     self.logger.debug("Not crawling for links in URL: " + url.geturl() + " STATUS CODE " + str(r.status_code))
                     
-            return { 'url': url, 'pagelinks': links, 'content_type': content_type, 'redirect_next': r.next, 'status_code': r.status_code }
+            return { 'url': url, 'record': url_record, 'pagelinks': links, 'content_type': content_type, 'redirect_next': r.next, 'status_code': r.status_code }
 
         except Exception as error:
             # Add the URL to the list of found urls with a 0 value
