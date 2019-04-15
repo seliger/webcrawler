@@ -195,6 +195,9 @@ class WebCrawler:
         else:
             found_url = self.instantiate_url(url)
 
+        if not found_url.url_text:
+            found_url.url_text = url.geturl()
+
         # For grouping purposes, add the FQDN (or a fqdn/something)
         if not found_url.root_stem and url.hostname in self.config.root_fqdns and self.path_match.match(url.path):
             found_url.root_stem = url.hostname + self.path_match.match(url.path).group(0)
