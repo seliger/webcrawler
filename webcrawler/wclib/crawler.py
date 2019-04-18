@@ -403,7 +403,7 @@ class WebCrawler:
                     if re.search(self.search_fqdn, url.hostname) and self.sub_path_match.match(url.path):
                         self.logger.debug('Extracting links from URL: ' + url.geturl())
                         soup = BeautifulSoup(r.text, features="html5lib")
-                        links = [urlparse(str(x.get('href'))) for x in soup.find_all('a')]
+                        links = [urlparse(str(x.get('href'))) for x in soup.find_all('a') if x is not None]
                     else:
                         self.logger.info("Logging, but not crawling, external site: " + url.geturl() + " STATUS CODE " + str(r.status_code))
 
