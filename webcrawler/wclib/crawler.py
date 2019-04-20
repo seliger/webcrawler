@@ -374,6 +374,10 @@ class WebCrawler:
             if 'path' in self.config.blacklist[input_url.hostname]:
                 if True in [input_url.path.startswith(x) for x in self.config.blacklist[input_url.hostname]['path']]:
                     is_blacklisted = True
+            # Check to see something in the query string is blocked
+            if 'query' in self.config.blacklist[input_url.hostname]:
+                if True in [x in input_url.query for x in self.config.blacklist[input_url.hostname]['query']]:
+                    is_blacklisted = True
             # Check to see if the netloc is blocked
             if 'netloc' in self.config.blacklist[input_url.hostname]:
                 if input_url.path == self.config.blacklist[input_url.hostname]['netloc']:

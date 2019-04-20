@@ -111,6 +111,10 @@ class Configuration:
                 if not 'scheme' in blacklist[bl.fqdn]:
                     blacklist[bl.fqdn]['scheme'] = []
                 blacklist[bl.fqdn]['scheme'].append(bl.scheme)
+            if not bl.query in blacklist[bl.fqdn] and not bl.query == None:
+                if not 'query' in blacklist[bl.fqdn]:
+                    blacklist[bl.fqdn]['query'] = []
+                blacklist[bl.fqdn]['query'].append(bl.scheme)
 
         return (root_fqdns, blacklist, scan)
 

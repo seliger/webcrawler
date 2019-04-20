@@ -80,6 +80,7 @@ class ScanBlacklist(BaseModel):
     path = CharField(null=True)
     scheme = CharField(null=True)
     netloc = CharField(null=True)
+    query = CharField(null=True)
 
     class Meta:
         table_name = 'ScanBlackLists'
