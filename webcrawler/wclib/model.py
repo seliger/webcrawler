@@ -66,7 +66,7 @@ class Backlink(BaseModel):
         primary_key = False
 
 class PageLink(BaseModel):
-    url = ForeignKeyField(column_name='url_id', field='url_id', model=FoundURL)
+    url_id = ForeignKeyField(column_name='url_id', field='url_id', model=FoundURL)
     link = TextField()
     linktext = TextField(null=True)
 
