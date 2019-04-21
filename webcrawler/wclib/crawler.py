@@ -238,7 +238,7 @@ class WebCrawler:
             found_url.crawled_timestamp = datetime.datetime.now()
 
             if pagelinks and dm.PageLink.select().where(dm.PageLink.url_id == found_url.url_id).count() == 0:
-                pagelinks_set = [{'url_id': found_url.url_id, 'link': z} for z in pagelinks]
+                pagelinks_set = [{'url_id': found_url.url_id, 'link': urlunparse(z)} for z in pagelinks]
                 dm.PageLink.insert_many(pagelinks_set).execute()
 
             # Attach the HTTP status code and content type for the crawled web page.
